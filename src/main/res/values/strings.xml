@@ -570,4 +570,14 @@
 	<string name="certificate_sha1">SHA1</string>
 	<string name="certicate_info_not_available">(Not available)</string>
 	<string name="certificate_not_found">No certificate found</string>
+	<string name="invite_contact_from_phone">Invite new contact</string>
+	<string name="contact_no_name">(No name)</string>
+	<string name="contact_has_no_contact_information">Contact has no contact information</string>
+	<string name="invite">Invite</string>
+	<string name="choose_recipient">Choose recipient</string>
+	<string name="invite_email_subject">Check out this app</string>
+	<string name="invite_email_body">Install the app from http://play.google.com and then add me as %s</string>
+	<string name="invite_sms_body">Install the app and add me as %s</string>
+	<string name="no_sms_app_installed">No SMS Application installed</string>
+	<string name="no_email_app_installed">No E-Mail Application installed</string>
 </resources>

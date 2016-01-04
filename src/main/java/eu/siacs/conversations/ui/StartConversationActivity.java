@@ -10,11 +10,16 @@ import android.app.AlertDialog;
 import android.app.Fragment;
 import android.app.FragmentTransaction;
 import android.app.ListFragment;
+import android.app.LoaderManager;
+import android.content.ContentResolver;
 import android.content.Context;
+import android.content.CursorLoader;
 import android.content.DialogInterface;
 import android.content.DialogInterface.OnClickListener;
 import android.content.Intent;
+import android.content.Loader;
 import android.content.pm.PackageManager;
+import android.database.Cursor;
 import android.net.Uri;
 import android.nfc.NdefMessage;
 import android.nfc.NdefRecord;
@@ -22,6 +27,7 @@ import android.nfc.NfcAdapter;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Parcelable;
+import android.provider.ContactsContract;
 import android.support.v13.app.FragmentPagerAdapter;
 import android.support.v4.view.ViewPager;
 import android.text.Editable;
@@ -43,6 +49,7 @@ import android.widget.CheckBox;
 import android.widget.Checkable;
 import android.widget.EditText;
 import android.widget.ListView;
+import android.widget.SimpleCursorAdapter;
 import android.widget.Spinner;
 import android.widget.Toast;
 
@@ -54,6 +61,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import eu.siacs.conversations.Config;
 import eu.siacs.conversations.R;
@@ -65,6 +73,7 @@ import eu.siacs.conversations.entities.Conversation;
 import eu.siacs.conversations.entities.ListItem;
 import eu.siacs.conversations.entities.Presences;
 import eu.siacs.conversations.services.XmppConnectionService.OnRosterUpdate;
+import eu.siacs.conversations.ui.adapter.ContactsAdapter;
 import eu.siacs.conversations.ui.adapter.KnownHostsAdapter;
 import eu.siacs.conversations.ui.adapter.ListItemAdapter;
 import eu.siacs.conversations.utils.XmppUri;
@@ -73,7 +82,7 @@ import eu.siacs.conversations.xmpp.XmppConnection;
 import eu.siacs.conversations.xmpp.jid.InvalidJidException;
 import eu.siacs.conversations.xmpp.jid.Jid;
 
-public class StartConversationActivity extends XmppActivity implements OnRosterUpdate, OnUpdateBlocklist {
+public class StartConversationActivity extends XmppActivity implements OnRosterUpdate, OnUpdateBlocklist, LoaderManager.LoaderCallbacks<Cursor> {
 
 	public int conference_context_id;
 	public int contact_context_id;
@@ -84,6 +93,8 @@ public class StartConversationActivity extends XmppActivity implements OnRosterU
 	private List<ListItem> contacts = new ArrayList<>();
 	private ArrayAdapter<ListItem> mContactsAdapter;
 	private MyListFragment mConferenceListFragment = new MyListFragment();
+	private ClickableListFragment mInviteListFragment = new ClickableListFragment();
+	private SimpleCursorAdapter mInviteAdapter;
 	private List<ListItem> conferences = new ArrayList<ListItem>();
 	private ArrayAdapter<ListItem> mConferenceAdapter;
 	private List<String> mActivatedAccounts = new ArrayList<String>();
@@ -94,6 +105,14 @@ public class StartConversationActivity extends XmppActivity implements OnRosterU
 	private EditText mSearchEditText;
 	private AtomicBoolean mRequestedContactsPermission = new AtomicBoolean(false);
 	private final int REQUEST_SYNC_CONTACTS = 0x3b28cf;
+
+	private static final String[] PROJECTION = {
+			ContactsContract.Data._ID,
+			ContactsContract.Data.DISPLAY_NAME_PRIMARY,
+			ContactsContract.Data.LOOKUP_KEY,
+			ContactsContract.Data.PHOTO_URI,
+			ContactsContract.Data.HAS_PHONE_NUMBER
+	};
 
 	private MenuItem.OnActionExpandListener mOnActionExpandListener = new MenuItem.OnActionExpandListener() {
 
@@ -199,7 +218,9 @@ public class StartConversationActivity extends XmppActivity implements OnRosterU
 			.setTabListener(mTabListener);
 		mConferencesTab = actionBar.newTab().setText(R.string.conferences)
 			.setTabListener(mTabListener);
+		Tab mInviteTab = actionBar.newTab().setText(R.string.invite).setTabListener(mTabListener);
 		actionBar.addTab(mContactsTab);
+		actionBar.addTab(mInviteTab);
 		actionBar.addTab(mConferencesTab);
 
 		mViewPager.setOnPageChangeListener(mOnPageChangeListener);
@@ -207,13 +228,15 @@ public class StartConversationActivity extends XmppActivity implements OnRosterU
 
 			@Override
 			public int getCount() {
-				return 2;
+				return 3;
 			}
 
 			@Override
 			public Fragment getItem(int position) {
 				if (position == 0) {
 					return mContactsListFragment;
+				} else if (position == 1) {
+					return mInviteListFragment;
 				} else {
 					return mConferenceListFragment;
 				}
@@ -228,7 +251,7 @@ public class StartConversationActivity extends XmppActivity implements OnRosterU
 
 				@Override
 				public void onItemClick(AdapterView<?> arg0, View arg1,
-						int position, long arg3) {
+										int position, long arg3) {
 					openConversationForBookmark(position);
 				}
 			});
@@ -242,13 +265,24 @@ public class StartConversationActivity extends XmppActivity implements OnRosterU
 
 				@Override
 				public void onItemClick(AdapterView<?> arg0, View arg1,
-						int position, long arg3) {
+										int position, long arg3) {
 					openConversationForContact(position);
 				}
 			});
 
 		this.mHideOfflineContacts = getPreferences().getBoolean("hide_offline", false);
-
+		mInviteAdapter = new ContactsAdapter(this);
+		this.mInviteListFragment.setListAdapter(mInviteAdapter);
+		this.mInviteListFragment.setOnListItemClickListener(new AdapterView.OnItemClickListener() {
+			@Override
+			public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
+				Object object = view.getTag();
+				if (object instanceof ContactsAdapter.AddressBookContact) {
+					ContactsAdapter.AddressBookContact contact = (ContactsAdapter.AddressBookContact) object;
+					invite(contact);
+				}
+			}
+		});
 	}
 
 	@Override
@@ -302,6 +336,162 @@ public class StartConversationActivity extends XmppActivity implements OnRosterU
 	protected void toggleContactBlock() {
 		final int position = contact_context_id;
 		BlockContactDialog.show(this, xmppConnectionService, (Contact) contacts.get(position));
+	}
+
+	@Override
+	public Loader<Cursor> onCreateLoader(int id, Bundle bundle) {
+		String needle = bundle.getString("needle","");
+		String selection = ContactsContract.Data.DISPLAY_NAME_PRIMARY+" LIKE ?";
+		String[] args = {"%"+needle+"%"};
+		return new CursorLoader(
+				this,
+				ContactsContract.Contacts.CONTENT_URI,
+				PROJECTION,
+				selection, //selection
+				args, //selection args
+				ContactsContract.Contacts.DISPLAY_NAME_PRIMARY + " ASC"
+		);
+	}
+
+	@Override
+	public void onLoadFinished(Loader<Cursor> loader, Cursor cursor) {
+		mInviteAdapter.swapCursor(cursor);
+	}
+
+	@Override
+	public void onLoaderReset(Loader<Cursor> loader) {
+		mInviteAdapter.swapCursor(null);
+	}
+
+	private void invite(ContactsAdapter.AddressBookContact contact) {
+		final List<String> phoneNumbers = getPhoneNumbers(contact);
+		final List<String> emails = getEmailAddresses(contact);
+		if (phoneNumbers.size() + emails.size() == 1) {
+			if (emails.size() >= 1) {
+				inviteByEmail(emails.get(0));
+			} else if (phoneNumbers.size() >= 1) {
+				inviteByPhoneNumber(phoneNumbers.get(0));
+			}
+		} else if (phoneNumbers.size() + emails.size() > 1) {
+			AlertDialog.Builder builder = new AlertDialog.Builder(this);
+			builder.setTitle(R.string.choose_recipient);
+			String[] items = new String[emails.size() + phoneNumbers.size()];
+			int i = 0;
+			for (String email : emails) {
+				items[i] = email;
+				++i;
+			}
+			for (String phone : phoneNumbers) {
+				items[i] = phone;
+				++i;
+			}
+			final AtomicInteger selection = new AtomicInteger(0);
+			builder.setSingleChoiceItems(items, selection.get(), new DialogInterface.OnClickListener() {
+				@Override
+				public void onClick(DialogInterface dialog, int which) {
+					selection.set(which);
+				}
+			});
+			builder.setNegativeButton(R.string.cancel, null);
+			builder.setPositiveButton(R.string.invite, new DialogInterface.OnClickListener() {
+				@Override
+				public void onClick(DialogInterface dialog, int which) {
+					int s = selection.get();
+					if (s >= emails.size()) {
+						inviteByPhoneNumber(phoneNumbers.get(s - emails.size()));
+					} else {
+						inviteByEmail(emails.get(s));
+					}
+				}
+			});
+			builder.create().show();
+		} else {
+			Toast.makeText(this, R.string.contact_has_no_contact_information, Toast.LENGTH_SHORT).show();
+		}
+	}
+
+	private void inviteByEmail(String email) {
+		List<Account> accounts = xmppConnectionService.getAccounts();
+		String me;
+		if (accounts.size() >= 1) {
+			me = accounts.get(0).getJid().toBareJid().toString();
+		} else {
+			me = "";
+		}
+		Intent intent = new Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:" + email));
+		intent.putExtra(Intent.EXTRA_SUBJECT, getString(R.string.invite_email_subject));
+		intent.putExtra(Intent.EXTRA_TEXT, getString(R.string.invite_email_body, me));
+		try {
+			startActivity(intent);
+		} catch (Exception e) {
+			Toast.makeText(this,R.string.no_email_app_installed,Toast.LENGTH_SHORT).show();
+		}
+	}
+
+	private void inviteByPhoneNumber(String number) {
+		List<Account> accounts = xmppConnectionService.getAccounts();
+		String me;
+		if (accounts.size() >= 1) {
+			me = accounts.get(0).getJid().toBareJid().toString();
+		} else {
+			me = "";
+		}
+		Intent sendIntent = new Intent(Intent.ACTION_VIEW);
+		sendIntent.putExtra("address", number);
+		sendIntent.putExtra("sms_body", getString(R.string.invite_sms_body, me));
+		sendIntent.setType("vnd.android-dir/mms-sms");
+		try {
+			startActivity(sendIntent);
+		} catch (Exception e) {
+			Intent smsIntent = new Intent(Intent.ACTION_SENDTO);
+			smsIntent.addCategory(Intent.CATEGORY_DEFAULT);
+			smsIntent.setType("vnd.android-dir/mms-sms");
+			smsIntent.putExtra("sms_body", getString(R.string.invite_sms_body, me));
+			smsIntent.setData(Uri.parse("sms:" + number));
+			try {
+				startActivity(smsIntent);
+			} catch (Exception e2) {
+				Toast.makeText(this,R.string.no_sms_app_installed,Toast.LENGTH_SHORT).show();
+			}
+		}
+	}
+
+	private List<String> getPhoneNumbers(ContactsAdapter.AddressBookContact contact) {
+		ArrayList<String> phoneNumbers = new ArrayList<>();
+		if (contact.hasPhoneNumber()) {
+			Cursor cursor = getContentResolver().query(
+					ContactsContract.CommonDataKinds.Phone.CONTENT_URI, null,
+					ContactsContract.CommonDataKinds.Phone.CONTACT_ID + " = ?",
+					new String[]{contact.getId()}, null);
+
+			while (cursor.moveToNext()) {
+				String phoneNumber = cursor.getString(cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER));
+				if (!phoneNumbers.contains(phoneNumber)) {
+					phoneNumbers.add(phoneNumber);
+				}
+			}
+			cursor.close();
+		}
+		return phoneNumbers;
+	}
+
+	private List<String> getEmailAddresses(ContactsAdapter.AddressBookContact contact) {
+		ContentResolver contentResolver = getContentResolver();
+		ArrayList<String> emails = new ArrayList<>();
+		Cursor cursor = contentResolver.query(
+				ContactsContract.CommonDataKinds.Email.CONTENT_URI, null,
+				ContactsContract.CommonDataKinds.Email.CONTACT_ID + " = ?",
+				new String[]{contact.getId()}, null);
+
+		while (cursor.moveToNext()) {
+			String emailAddress = cursor.getString(cursor.getColumnIndex(ContactsContract.CommonDataKinds.Email.DATA)).replaceAll("\\s", "");
+
+			if (!emailAddress.isEmpty() && !emails.contains(emailAddress))
+				emails.add(emailAddress);
+		}
+
+		cursor.close();
+		return emails;
 	}
 
 	protected void deleteContact() {
@@ -496,10 +686,17 @@ public class StartConversationActivity extends XmppActivity implements OnRosterU
 		mSearchEditText = (EditText) mSearchView
 			.findViewById(R.id.search_field);
 		mSearchEditText.addTextChangedListener(mSearchTextWatcher);
-		if (getActionBar().getSelectedNavigationIndex() == 0) {
-			menuCreateConference.setVisible(false);
-		} else {
-			menuCreateContact.setVisible(false);
+		switch(getActionBar().getSelectedNavigationIndex()) {
+			case 0:
+				menuCreateConference.setVisible(false);
+				break;
+			case 2:
+				menuCreateContact.setVisible(false);
+				break;
+			default:
+				menuCreateContact.setVisible(false);
+				menuCreateConference.setVisible(false);
+				break;
 		}
 		if (mInitialJid != null) {
 			mMenuSearchView.expandActionView();
@@ -528,6 +725,7 @@ public class StartConversationActivity extends XmppActivity implements OnRosterU
 					filter(mSearchEditText.getText().toString());
 				}
 				invalidateOptionsMenu();
+				return true;
 		}
 		return super.onOptionsItemSelected(item);
 	}
@@ -698,9 +896,13 @@ public class StartConversationActivity extends XmppActivity implements OnRosterU
 	}
 
 	protected void filter(String needle) {
+		Log.d(Config.LOGTAG,"called to filter");
 		if (xmppConnectionServiceBound) {
 			this.filterContacts(needle);
 			this.filterConferences(needle);
+			Bundle bundle = new Bundle();
+			bundle.putString("needle",needle);
+			getLoaderManager().restartLoader(0, bundle, this);
 		}
 	}
 
@@ -752,13 +954,9 @@ public class StartConversationActivity extends XmppActivity implements OnRosterU
 		}
 	}
 
-	public static class MyListFragment extends ListFragment {
-		private AdapterView.OnItemClickListener mOnItemClickListener;
-		private int mResContextMenu;
+	public static class ClickableListFragment extends ListFragment {
 
-		public void setContextMenu(final int res) {
-			this.mResContextMenu = res;
-		}
+		private AdapterView.OnItemClickListener mOnItemClickListener;
 
 		@Override
 		public void onListItemClick(final ListView l, final View v, final int position, final long id) {
@@ -774,8 +972,22 @@ public class StartConversationActivity extends XmppActivity implements OnRosterU
 		@Override
 		public void onViewCreated(final View view, final Bundle savedInstanceState) {
 			super.onViewCreated(view, savedInstanceState);
-			registerForContextMenu(getListView());
 			getListView().setFastScrollEnabled(true);
+		}
+	}
+
+	public static class MyListFragment extends ClickableListFragment {
+		private int mResContextMenu;
+
+		public void setContextMenu(final int res) {
+			this.mResContextMenu = res;
+		}
+
+
+		@Override
+		public void onViewCreated(final View view, final Bundle savedInstanceState) {
+			super.onViewCreated(view, savedInstanceState);
+			registerForContextMenu(getListView());
 		}
 
 		@Override

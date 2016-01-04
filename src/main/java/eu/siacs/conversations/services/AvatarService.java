@@ -18,6 +18,7 @@ import eu.siacs.conversations.entities.Conversation;
 import eu.siacs.conversations.entities.ListItem;
 import eu.siacs.conversations.entities.Message;
 import eu.siacs.conversations.entities.MucOptions;
+import eu.siacs.conversations.ui.adapter.ContactsAdapter;
 import eu.siacs.conversations.utils.UIHelper;
 
 public class AvatarService {
@@ -37,6 +38,17 @@ public class AvatarService {
 
 	public AvatarService(XmppConnectionService service) {
 		this.mXmppConnectionService = service;
+	}
+
+	private Bitmap get(final ContactsAdapter.AddressBookContact contact, final int size, boolean cachedOnly) {
+		Bitmap avatar = null;
+		if (contact.getPhotoUri() != null) {
+			avatar = mXmppConnectionService.getFileBackend().cropCenterSquare(contact.getPhotoUri(), size);
+		}
+		if (avatar == null) {
+			avatar = get(contact.getDisplayName(), size, cachedOnly);
+		}
+		return avatar;
 	}
 
 	private Bitmap get(final Contact contact, final int size, boolean cachedOnly) {
@@ -131,6 +143,8 @@ public class AvatarService {
 			} else {
 				return get(bookmark.getDisplayName(), size, cachedOnly);
 			}
+		} else if (item instanceof ContactsAdapter.AddressBookContact) {
+			return get((ContactsAdapter.AddressBookContact) item, size, cachedOnly);
 		} else {
 			return get(item.getDisplayName(), size, cachedOnly);
 		}
@@ -292,7 +306,7 @@ public class AvatarService {
 		}
 		bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
 		Canvas canvas = new Canvas(bitmap);
-		final String trimmedName = name.trim();
+		final String trimmedName = name == null ? "" : name.trim();
 		drawTile(canvas, trimmedName, 0, 0, size, size);
 		mXmppConnectionService.getBitmapCache().put(KEY, bitmap);
 		return bitmap;
